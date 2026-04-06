@@ -1,0 +1,26 @@
+version: "3.9"
+
+# 개발 환경 전용: DB + Redis만 실행
+# 사용법: docker compose -f docker-compose.dev.yml up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tw-dev-postgres
+    environment:
+      POSTGRES_DB: terraworld
+      POSTGRES_USER: terraworld
+      POSTGRES_PASSWORD: terraworld
+    ports:
+      - "5432:5432"
+    volumes:
+      - dev_postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: tw-dev-redis
+    ports:
+      - "6379:6379"
+
+volumes:
+  dev_postgres_data:
