@@ -76,6 +76,59 @@ PAT 권한: `repo` (read). 발급 위치: GitHub Account → Settings → Develo
 
 ---
 
+## 5b. Universal Links / App Links (`deploy/nginx/default.conf`)
+
+iOS Universal Links 와 Android App Links 가 동작하려면 nginx 가 두 well-known 엔드포인트를 정확한 메타데이터로 반환해야 한다. 현재 `default.conf` line 24 / 30 에 **placeholder 가 박혀있어 prod 배포 전 운영자 손으로 치환 필수**.
+
+| 토큰 | 위치 | 의미 | 추출 방법 |
+| --- | --- | --- | --- |
+| `TEAMID` | default.conf line 24 | Apple Developer Team ID (10자 영숫자) | Apple Developer Console → Membership → Team ID |
+| `SHA256_FINGERPRINT_HERE` | default.conf line 30 | release keystore SHA-256 fingerprint | 아래 추출 명령 §SHA-256 fingerprint 참조 |
+
+`app.terraworld.mobile` (iOS Bundle ID / Android applicationId) 부분은 mobile repo 의 `capacitor.config.ts.appId` 와 일치하도록 이미 박혀있음 — **변경 금지**.
+
+### 추출 명령
+
+**iOS Team ID** (회원 콘솔 또는 CLI):
+
+```bash
+# CLI (App Store Connect API key 보유 시)
+xcrun altool --list-providers --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER" -t ios -f json
+# 또는 Xcode → 프로젝트 → Signing & Capabilities → "Team" 우측 ID
+```
+
+**Android SHA-256 fingerprint** (release keystore 보유 시):
+
+```bash
+keytool -list -v -keystore release.jks -alias terraworld -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+  | grep -A1 "SHA256:" | head -1 | tr -d ' '
+# 출력 예: 14:6D:E9:83:AA:BB:...:F0
+```
+
+Play App Signing 사용 시 (권장) Play Console 의 "App signing key certificate" 의 SHA-256 fingerprint 도 함께 등록 (sha256_cert_fingerprints 배열에 두 값).
+
+### 적용 절차
+
+1. 위 두 값 추출 (운영자 손)
+2. `deploy/nginx/default.conf` line 24, 30 의 placeholder 를 실제 값으로 교체
+3. `nginx -t` 로 syntax 검증 → 무중단 reload (`docker compose exec nginx nginx -s reload`)
+4. 검증:
+   - `bash scripts/check-applinks.sh https://terraworld.app` (placeholder 잔존 + 응답 형식 점검)
+   - Apple [AASA Validator](https://branch.io/resources/aasa-validator/) — 도메인 입력 후 Pass 확인
+   - Google [Statement List Tester](https://developers.google.com/digital-asset-links/tools/generator) — domain + applicationId 입력 후 Pass 확인
+
+### 회전 시나리오
+
+- **iOS Team ID 변경** — 거의 발생 안 함 (Apple Developer Account 분리 시에만). 변경 시 line 24 갱신 + nginx reload + 모든 iOS 사용자가 앱 재설치 (Universal Link 재인증).
+- **Android keystore 변경** — Play Store 업데이트가 동일 keystore 만 허용하므로 회전 불가. (§5 의 ANDROID_KEYSTORE_* 설명 참조)
+- **applicationId 변경** — 사실상 신규 앱. 본 절차 영역 밖.
+
+### 자동화 후속 (별도 PR 후보)
+
+현재는 운영자가 직접 default.conf 를 편집. nginx-alpine 의 `/etc/nginx/templates/*.template` 자동 envsubst 로 치환하는 구조로 전환하면 `IOS_TEAM_ID` / `ANDROID_SHA256_FINGERPRINT` 환경변수만 .env 에 두면 됨. 단, prod 영향 변경이라 별도 PR 로 분리 진행.
+
+---
+
 ## 6. Deploy 시크릿 (CI → 서버)
 
 | 이름 | 사용처 |
