@@ -75,8 +75,15 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    # nginx-alpine entrypoint 가 /etc/nginx/templates/*.template 을 envsubst →
+    # /etc/nginx/conf.d/ 로 자동 출력. NGINX_ENVSUBST_FILTER 가 치환 대상을 제한해
+    # nginx 변수 ($host, $request_uri 등) 를 의도치 않게 비우지 않도록 보장.
+    environment:
+      IOS_TEAM_ID: ${IOS_TEAM_ID:?set IOS_TEAM_ID in .env (10-char Apple Developer Team ID — see SECRETS.md §5b)}
+      ANDROID_SHA256_FINGERPRINT: ${ANDROID_SHA256_FINGERPRINT:?set ANDROID_SHA256_FINGERPRINT in .env (release keystore SHA-256 — see SECRETS.md §5b)}
+      NGINX_ENVSUBST_FILTER: "IOS_TEAM_ID|ANDROID_SHA256_FINGERPRINT"
     volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/templates:/etc/nginx/templates:ro
       - ./nginx/certs:/etc/nginx/certs:ro
       - certbot_data:/var/www/certbot:ro
     healthcheck:

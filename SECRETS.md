@@ -76,14 +76,14 @@ PAT 권한: `repo` (read). 발급 위치: GitHub Account → Settings → Develo
 
 ---
 
-## 5b. Universal Links / App Links (`deploy/nginx/default.conf`)
+## 5b. Universal Links / App Links (envsubst 자동화)
 
-iOS Universal Links 와 Android App Links 가 동작하려면 nginx 가 두 well-known 엔드포인트를 정확한 메타데이터로 반환해야 한다. 현재 `default.conf` line 24 / 30 에 **placeholder 가 박혀있어 prod 배포 전 운영자 손으로 치환 필수**.
+iOS Universal Links 와 Android App Links 가 동작하려면 nginx 가 두 well-known 엔드포인트를 정확한 메타데이터로 반환해야 한다. **2026-05-08 부터 envsubst 자동화 도입** — 운영자가 `nginx/default.conf` 를 직접 편집하지 않고 `deploy/.env` 의 환경변수 두 개만 설정하면 됨. nginx-alpine entrypoint 가 `nginx/templates/default.conf.template` 을 자동 envsubst → `/etc/nginx/conf.d/default.conf` 로 출력.
 
-| 토큰 | 위치 | 의미 | 추출 방법 |
+| 환경변수 (deploy/.env) | template placeholder | 의미 | 추출 방법 |
 | --- | --- | --- | --- |
-| `TEAMID` | default.conf line 24 | Apple Developer Team ID (10자 영숫자) | Apple Developer Console → Membership → Team ID |
-| `SHA256_FINGERPRINT_HERE` | default.conf line 30 | release keystore SHA-256 fingerprint | 아래 추출 명령 §SHA-256 fingerprint 참조 |
+| `IOS_TEAM_ID` | `${IOS_TEAM_ID}` (line 30) | Apple Developer Team ID (10자 영숫자) | Apple Developer Console → Membership → Team ID |
+| `ANDROID_SHA256_FINGERPRINT` | `${ANDROID_SHA256_FINGERPRINT}` (line 41) | release keystore SHA-256 fingerprint | 아래 추출 명령 §SHA-256 fingerprint 참조 |
 
 `app.terraworld.mobile` (iOS Bundle ID / Android applicationId) 부분은 mobile repo 의 `capacitor.config.ts.appId` 와 일치하도록 이미 박혀있음 — **변경 금지**.
 
@@ -107,11 +107,22 @@ keytool -list -v -keystore release.jks -alias terraworld -storepass "$ANDROID_KE
 
 Play App Signing 사용 시 (권장) Play Console 의 "App signing key certificate" 의 SHA-256 fingerprint 도 함께 등록 (sha256_cert_fingerprints 배열에 두 값).
 
-### 적용 절차
+### 적용 절차 (envsubst 자동화 후)
 
 1. 위 두 값 추출 (운영자 손)
-2. `deploy/nginx/default.conf` line 24, 30 의 placeholder 를 실제 값으로 교체
-3. `nginx -t` 로 syntax 검증 → 무중단 reload (`docker compose exec nginx nginx -s reload`)
+2. `deploy/.env` 에 두 환경변수 추가:
+
+   ```bash
+   IOS_TEAM_ID=ABCD1234EF
+   ANDROID_SHA256_FINGERPRINT=14:6D:E9:83:AA:BB:CC:...:F0
+   ```
+
+   (변수 미설정 시 `docker compose up` 자체가 fail — `${VAR:?...}` 가드)
+3. nginx 재시작: `docker compose up -d nginx` 또는 `docker compose restart nginx`
+   - nginx-alpine entrypoint 가 `nginx/templates/default.conf.template` 을 envsubst →
+     `/etc/nginx/conf.d/default.conf` 자동 출력
+   - `NGINX_ENVSUBST_FILTER='IOS_TEAM_ID|ANDROID_SHA256_FINGERPRINT'` 가 치환 대상 한정 →
+     nginx 변수 ($host, $request_uri 등) 는 그대로 보존
 4. 검증:
    - `bash scripts/check-applinks.sh https://terraworld.app` (placeholder 잔존 + 응답 형식 점검)
    - Apple [AASA Validator](https://branch.io/resources/aasa-validator/) — 도메인 입력 후 Pass 확인
@@ -123,9 +134,9 @@ Play App Signing 사용 시 (권장) Play Console 의 "App signing key certifica
 - **Android keystore 변경** — Play Store 업데이트가 동일 keystore 만 허용하므로 회전 불가. (§5 의 ANDROID_KEYSTORE_* 설명 참조)
 - **applicationId 변경** — 사실상 신규 앱. 본 절차 영역 밖.
 
-### 자동화 후속 (별도 PR 후보)
+### Legacy (`nginx/default.conf`)
 
-현재는 운영자가 직접 default.conf 를 편집. nginx-alpine 의 `/etc/nginx/templates/*.template` 자동 envsubst 로 치환하는 구조로 전환하면 `IOS_TEAM_ID` / `ANDROID_SHA256_FINGERPRINT` 환경변수만 .env 에 두면 됨. 단, prod 영향 변경이라 별도 PR 로 분리 진행.
+`nginx/default.conf` 는 envsubst 마이그레이션 이전 형식이며 prod 컨테이너에 마운트되지 않는다 (docker-compose 의 nginx volume 이 `nginx/templates/` 만 가리킴). reference 용으로 보존되며 다음 정기 cleanup PR 에서 삭제 예정.
 
 ---
 
