@@ -1,8 +1,3 @@
-# ⚠ DEPRECATED — placeholder envsubst 자동화 도입 후 본 파일은 prod 에서 사용되지 않습니다.
-# 새 진실 공급원: nginx/templates/default.conf.template (`${IOS_TEAM_ID}` / `${ANDROID_SHA256_FINGERPRINT}` 변수)
-# nginx-alpine entrypoint 가 templates 디렉토리를 자동 envsubst → /etc/nginx/conf.d/ 로 출력.
-# 본 파일은 reference 용으로 보존 — 다음 정기 cleanup PR 에서 삭제 예정.
-
 upstream frontend {
     server frontend:3000;
 }
@@ -25,26 +20,22 @@ server {
 
     # Apple App Site Association (Universal Links)
     #
-    # ⚠ 배포 전 placeholder 치환 필수 — SECRETS.md §5b 의 Universal Links / App Links 절 참고.
-    #   - TEAMID                  → Apple Developer Team ID (10자, 예: ABCD1234EF)
-    #   - app.terraworld.mobile   → iOS Bundle ID (PRODUCT_BUNDLE_IDENTIFIER 와 일치, 변경 금지)
-    # 검증: scripts/check-applinks.sh 또는 https://branch.io/resources/aasa-validator/
+    # IOS_TEAM_ID 환경변수가 nginx-alpine entrypoint 의 envsubst 에 의해 치환됨.
+    # NGINX_ENVSUBST_FILTER 가 'IOS_TEAM_ID|ANDROID_SHA256_FINGERPRINT' 로 한정되어
+    # 다른 nginx 변수($host 등)는 그대로 보존된다. 운영자는 deploy/.env 의
+    # IOS_TEAM_ID 만 설정하면 됨 (운영 가이드: SECRETS.md §5b).
     location = /.well-known/apple-app-site-association {
         default_type application/json;
-        return 200 '{"applinks":{"details":[{"appIDs":["TEAMID.app.terraworld.mobile"],"paths":["/share/*"]}]}}';
+        return 200 '{"applinks":{"details":[{"appIDs":["${IOS_TEAM_ID}.app.terraworld.mobile"],"paths":["/share/*"]}]}}';
     }
 
     # Android App Links
     #
-    # ⚠ 배포 전 placeholder 치환 필수 — SECRETS.md §5b 참고.
-    #   - SHA256_FINGERPRINT_HERE → release keystore SHA-256 fingerprint
-    #     (대문자 16진수, 콜론 구분, 예: 14:6D:E9:83:...)
-    #     `keytool -list -v -keystore release.jks -alias terraworld | grep SHA256`
-    #   - app.terraworld.mobile   → applicationId 와 일치 (mobile/android/app/build.gradle), 변경 금지
-    # 검증: scripts/check-applinks.sh 또는 https://developers.google.com/digital-asset-links/tools/generator
+    # ANDROID_SHA256_FINGERPRINT (대문자 16진수, 콜론 구분) 가 envsubst 로 치환됨.
+    # 운영자가 deploy/.env 갱신 → nginx 재시작 1회로 적용.
     location = /.well-known/assetlinks.json {
         default_type application/json;
-        return 200 '[{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"android_app","package_name":"app.terraworld.mobile","sha256_cert_fingerprints":["SHA256_FINGERPRINT_HERE"]}}]';
+        return 200 '[{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"android_app","package_name":"app.terraworld.mobile","sha256_cert_fingerprints":["${ANDROID_SHA256_FINGERPRINT}"]}}]';
     }
 
     # 그 외 모든 요청은 HTTPS 로 리다이렉트
