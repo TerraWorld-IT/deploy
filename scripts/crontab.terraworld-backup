@@ -1,0 +1,13 @@
+# P3-4 (O-DR-001): TerraWorld 백업 cron 등록 예시.
+# /etc/cron.d/terraworld-backup 에 배치(소유자 root, 모드 0644) 하거나 `crontab -e` 로 등록.
+# 시각은 UTC 기준. KST = UTC+9.
+#
+# env 주입: S3_BUCKET / GPG_RECIPIENT / DISCORD_WEBHOOK_URL / REDIS_CLI_ARGS 등은
+#   /opt/terraworld/deploy/.backup.env 에 두고 스크립트 호출 전에 주입하거나(아래처럼 inline),
+#   `BASH_ENV=/opt/terraworld/deploy/.backup.env` 로 cron 환경에 로드.
+
+# PostgreSQL — 매일 03:00 KST (= 18:00 UTC 전날). RPO 보강은 WAL archive(runbook §2.2).
+0 18 * * * postgres S3_BUCKET=terraworld-backup /opt/terraworld/deploy/scripts/pg-backup.sh >> /var/log/terraworld/pg-backup.log 2>&1
+
+# Redis — 매일 03:30 KST (= 18:30 UTC 전날).
+30 18 * * * redis S3_BUCKET=terraworld-backup /opt/terraworld/deploy/scripts/redis-backup.sh >> /var/log/terraworld/redis-backup.log 2>&1
