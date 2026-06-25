@@ -45,11 +45,35 @@ services:
       redis:
         condition: service_healthy
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/terraworld
+      # 프로필 — prod 미설정 시 application.yml default(=dev) 로 silent fallback:
+      # localhost JWKS, baseline-on-migrate=true, Swagger 노출 → prod 금지 상태.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      # DB (postgres 서비스 — POSTGRES_USER/DB 와 일치)
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/terraworld?currentSchema=public
       SPRING_DATASOURCE_USERNAME: terraworld
       SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-terraworld}
-      SPRING_DATA_REDIS_HOST: redis
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      # Redis (application.yml 은 REDIS_HOST/REDIS_PORT 로 바인딩)
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      # JWT 검증 — RS256/JWKS (SEC-005: 대칭 시크릿 없음). prod 프로필은 기본값 없음 → 미주입 시 부팅 실패.
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:?set AUTH_JWKS_URL in .env (e.g. https://terraworld.app/api/auth/jwks)}
+      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-terraworld}
+      AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-terraworld-api}
+      # better-auth 부트스트랩 호출용 공유 토큰 (frontend INTERNAL_API_TOKEN 과 동일값, PAY-001 fail-fast)
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN in .env (frontend 와 동일값)}
+      # CORS — prod 프로필 기본값 없음. localhost 포함 금지(SEC-009 부팅 abort)
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?set CORS_ALLOWED_ORIGINS in .env (e.g. https://terraworld.app)}
+      # ── 외부 서비스 활성화 시 주입 (미설정=dormant: FCM noop / R2 base64 fallback / Play 검증 disabled) ──
+      FCM_SERVICE_ACCOUNT_JSON: ${FCM_SERVICE_ACCOUNT_JSON:-}
+      ADMOB_SSV_PUBLIC_KEY_URL: ${ADMOB_SSV_PUBLIC_KEY_URL:-https://gstatic.com/admob/reward/verifier-keys.json}
+      REWARD_AD_NONCE_REQUIRED: ${REWARD_AD_NONCE_REQUIRED:-true}
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-}
+      R2_PUBLIC_BASE_URL: ${R2_PUBLIC_BASE_URL:-}
+      TERRAWORLD_BILLING_PLAY_PACKAGE_NAME: ${TERRAWORLD_BILLING_PLAY_PACKAGE_NAME:-app.terraworld.mobile}
+      TERRAWORLD_BILLING_PLAY_SERVICE_ACCOUNT_JSON_PATH: ${TERRAWORLD_BILLING_PLAY_SERVICE_ACCOUNT_JSON_PATH:-}
     ports:
       - "8080:8080"
 
@@ -60,7 +84,24 @@ services:
     depends_on:
       - backend
     environment:
-      NUXT_PUBLIC_API_BASE_URL: ${API_BASE_URL:-http://backend:8080/api/v1}
+      # ── better-auth / Nitro 서버 (server-only) ──
+      # DATABASE_URL 미주입 시 better-auth 가 DB 연결 불가 → 인증 전체 붕괴.
+      # 도커 스택에서는 .env 의 DB_HOST=postgres 로 구성: postgresql://USER:PW@postgres:5432/DB?search_path=auth,public
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env (postgres 서비스 가리키게)}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env (openssl rand -hex 32)}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-https://terraworld.app}
+      # backend 와 동일값. Nitro databaseHooks → Spring 내부 부트스트랩 호출
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN in .env (backend 와 동일값)}
+      INTERNAL_API_BASE_URL: ${INTERNAL_API_BASE_URL:-http://backend:8080}
+      # ── 클라이언트 노출(public) — 브라우저가 nginx 경유로 접근하므로 외부 https URL 이어야 함 ──
+      NUXT_PUBLIC_API_BASE_URL: ${NUXT_PUBLIC_API_BASE_URL:?set NUXT_PUBLIC_API_BASE_URL in .env (e.g. https://terraworld.app/api/v1)}
+      NUXT_PUBLIC_AUTH_BASE_URL: ${NUXT_PUBLIC_AUTH_BASE_URL:-https://terraworld.app}
+      # 외부 서비스 활성화 시 주입 (미설정=배너/광고 미노출). nuxt-gtag/AdSense 가 빌드타임 의존이면
+      # deploy.yml docker build --build-arg 로도 주입 필요할 수 있음 — SECRETS.md 참고.
+      NUXT_PUBLIC_GA_ID: ${NUXT_PUBLIC_GA_ID:-}
+      NUXT_PUBLIC_ADSENSE_CLIENT: ${NUXT_PUBLIC_ADSENSE_CLIENT:-}
+      NUXT_PUBLIC_ADSENSE_SLOT: ${NUXT_PUBLIC_ADSENSE_SLOT:-}
+      NUXT_PUBLIC_ADMOB_REWARDED_AD_ID: ${NUXT_PUBLIC_ADMOB_REWARDED_AD_ID:-}
     ports:
       - "3000:3000"
 
