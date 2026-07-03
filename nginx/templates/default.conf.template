@@ -7,11 +7,18 @@ upstream backend {
 }
 
 # ─────────────────────────────────────────────────────────────────────────
-# HTTP (80) — Let's Encrypt 챌린지 + HTTPS 리다이렉트
+# 도메인은 envsubst 로 주입 — deploy/.env 의 DEPLOY_DOMAIN 하나만 바꾸면 됨.
+# nginx-alpine entrypoint 가 NGINX_ENVSUBST_FILTER 로 지정된 변수만 치환하고
+# $host / $request_uri 등 nginx 런타임 변수는 보존한다.
+#   NGINX_ENVSUBST_FILTER = DEPLOY_DOMAIN|IOS_TEAM_ID|ANDROID_SHA256_FINGERPRINT
+# ─────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────
+# HTTP (80) — Let's Encrypt 챌린지 + HTTPS 리다이렉트 + App/Universal Links
 # ─────────────────────────────────────────────────────────────────────────
 server {
     listen 80;
-    server_name terraworld.app www.terraworld.app;
+    server_name ${DEPLOY_DOMAIN};
 
     # Let's Encrypt 챌린지 (certbot --webroot)
     location /.well-known/acme-challenge/ {
@@ -19,20 +26,14 @@ server {
     }
 
     # Apple App Site Association (Universal Links)
-    #
-    # IOS_TEAM_ID 환경변수가 nginx-alpine entrypoint 의 envsubst 에 의해 치환됨.
-    # NGINX_ENVSUBST_FILTER 가 'IOS_TEAM_ID|ANDROID_SHA256_FINGERPRINT' 로 한정되어
-    # 다른 nginx 변수($host 등)는 그대로 보존된다. 운영자는 deploy/.env 의
-    # IOS_TEAM_ID 만 설정하면 됨 (운영 가이드: SECRETS.md §5b).
+    # IOS_TEAM_ID 환경변수가 envsubst 로 치환됨. 운영자는 deploy/.env 의
+    # IOS_TEAM_ID 만 설정 (SECRETS.md §5b).
     location = /.well-known/apple-app-site-association {
         default_type application/json;
         return 200 '{"applinks":{"details":[{"appIDs":["${IOS_TEAM_ID}.app.terraworld.mobile"],"paths":["/share/*"]}]}}';
     }
 
     # Android App Links
-    #
-    # ANDROID_SHA256_FINGERPRINT (대문자 16진수, 콜론 구분) 가 envsubst 로 치환됨.
-    # 운영자가 deploy/.env 갱신 → nginx 재시작 1회로 적용.
     location = /.well-known/assetlinks.json {
         default_type application/json;
         return 200 '[{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"android_app","package_name":"app.terraworld.mobile","sha256_cert_fingerprints":["${ANDROID_SHA256_FINGERPRINT}"]}}]';
@@ -49,18 +50,15 @@ server {
 # ─────────────────────────────────────────────────────────────────────────
 server {
     listen 443 ssl http2;
-    server_name terraworld.app www.terraworld.app;
+    server_name ${DEPLOY_DOMAIN};
 
-    # Let's Encrypt 인증서
-    # 발급: docker-compose run --rm certbot certonly --webroot -w /var/www/certbot -d terraworld.app -d www.terraworld.app
-    #
-    # 갱신 (90일 전부터 가능, cron 권장):
-    #   0 3 * * * /usr/bin/docker compose -f /opt/terraworld/docker-compose.yml run --rm certbot renew \
+    # Let's Encrypt 인증서 (bootstrap.sh 가 certbot 으로 발급)
+    #   docker compose run --rm certbot certonly --webroot -w /var/www/certbot -d ${DEPLOY_DOMAIN}
+    # 갱신 (cron 권장):
+    #   0 3 * * * docker compose -f /opt/terraworld/docker-compose.yml run --rm certbot renew \
     #       --deploy-hook "docker compose -f /opt/terraworld/docker-compose.yml exec nginx nginx -s reload"
-    # → certbot renew 가 인증서 갱신 후 deploy-hook 으로 nginx -s reload 자동 실행.
-    # → reload 시 fullchain.pem / privkey.pem 새 파일을 다시 메모리로 로드 (downtime 없음).
-    ssl_certificate     /etc/letsencrypt/live/terraworld.app/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/terraworld.app/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/${DEPLOY_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DEPLOY_DOMAIN}/privkey.pem;
 
     # TLS 1.2+ only — 1.0/1.1 은 PCI / OWASP 권고로 비활성
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -78,13 +76,25 @@ server {
     resolver 1.1.1.1 8.8.8.8 valid=300s;
     resolver_timeout 5s;
 
-    # 보안 헤더 (HSTS 포함). Nuxt/Spring 도 자체적으로 헤더를 보내지만 nginx 가 first hit.
+    # 보안 헤더 (HSTS 포함)
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
     add_header X-Frame-Options "DENY" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
-    # API 프록시
+    # ── 인증 (better-auth / Nitro) ── CI-1 fix
+    # better-auth 엔드포인트(/api/auth/*, JWKS 포함)는 Nitro(frontend)가 서빙한다.
+    # nginx 는 longest-prefix 매칭이라 /api/auth/ 가 /api/ 보다 우선 → frontend 로.
+    # 이게 없으면 브라우저 로그인·JWKS 가 backend(Spring)로 가서 깨진다.
+    location /api/auth/ {
+        proxy_pass http://frontend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # ── 비즈니스 API (Spring) ──  /api/v1/*, swagger 등
     location /api/ {
         proxy_pass http://backend;
         proxy_set_header Host $host;
@@ -95,12 +105,11 @@ server {
         proxy_send_timeout 60s;
     }
 
-    # Swagger UI
+    # Swagger UI (비-prod 에서만 backend 가 노출)
     location /swagger-ui/ {
         proxy_pass http://backend;
         proxy_set_header Host $host;
     }
-
     location /api-docs {
         proxy_pass http://backend;
         proxy_set_header Host $host;
@@ -114,7 +123,7 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
-    # Frontend (Nuxt SSR + WebSocket HMR — prod 에서는 HMR 미사용이지만 유지)
+    # Frontend (Nuxt SSR + WebSocket)
     location / {
         proxy_pass http://frontend;
         proxy_set_header Host $host;
