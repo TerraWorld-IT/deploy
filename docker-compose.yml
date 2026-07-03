@@ -1,5 +1,8 @@
-version: "3.9"
-
+# TerraWorld 프로덕션 스택.
+# 인프라 종속값은 전부 deploy/.env 로 외부화 (.env.production.example 참고).
+# 기동: deploy/scripts/bootstrap.sh (권장) 또는 아래 순서 수동 실행.
+#   1) .env 작성  2) certbot 최초 발급  3) docker compose up -d
+# ─────────────────────────────────────────────────────────────────────────
 services:
   # ──────────── Infrastructure ────────────
   postgres:
@@ -7,15 +10,14 @@ services:
     container_name: tw-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: terraworld
-      POSTGRES_USER: terraworld
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-terraworld}
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # 포트 미노출 — nginx/backend/frontend 만 내부 네트워크로 접근 (보안).
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U terraworld"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -24,8 +26,6 @@ services:
     image: redis:7-alpine
     container_name: tw-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -35,8 +35,11 @@ services:
       retries: 5
 
   # ──────────── Application ────────────
+  # env_file 로 전체 env 계약 주입 (CI-3 fix): SPRING_DATASOURCE_URL / AUTH_JWKS_URL /
+  # AUTH_JWT_ISSUER / AUTH_JWT_AUDIENCE / INTERNAL_API_TOKEN / CORS_ALLOWED_ORIGINS /
+  # SPRING_PROFILES_ACTIVE / REDIS_HOST 등. 값은 .env 참조.
   backend:
-    image: ${REGISTRY_URL:-terraworld}-backend:${TAG:-latest}
+    image: ${REGISTRY_URL}/terraworld-backend:${TAG:-latest}
     container_name: tw-backend
     restart: unless-stopped
     depends_on:
@@ -44,25 +47,22 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/terraworld
-      SPRING_DATASOURCE_USERNAME: terraworld
-      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-terraworld}
-      SPRING_DATA_REDIS_HOST: redis
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
-    ports:
-      - "8080:8080"
+    env_file: .env
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
 
   frontend:
-    image: ${REGISTRY_URL:-terraworld}-frontend:${TAG:-latest}
+    image: ${REGISTRY_URL}/terraworld-frontend:${TAG:-latest}
     container_name: tw-frontend
     restart: unless-stopped
     depends_on:
-      - backend
-    environment:
-      NUXT_PUBLIC_API_BASE_URL: ${API_BASE_URL:-http://backend:8080/api/v1}
-    ports:
-      - "3000:3000"
+      backend:
+        condition: service_healthy
+    env_file: .env
 
   # ──────────── Reverse Proxy ────────────
   nginx:
@@ -75,35 +75,48 @@ services:
     ports:
       - "80:80"
       - "443:443"
-    # nginx-alpine entrypoint 가 /etc/nginx/templates/*.template 을 envsubst →
-    # /etc/nginx/conf.d/ 로 자동 출력. NGINX_ENVSUBST_FILTER 가 치환 대상을 제한해
-    # nginx 변수 ($host, $request_uri 등) 를 의도치 않게 비우지 않도록 보장.
+    # nginx-alpine entrypoint 가 templates/*.template 를 envsubst → conf.d/.
+    # NGINX_ENVSUBST_FILTER 로 지정한 변수만 치환($host 등 런타임 변수 보존).
     environment:
-      IOS_TEAM_ID: ${IOS_TEAM_ID:?set IOS_TEAM_ID in .env (10-char Apple Developer Team ID — see SECRETS.md §5b)}
-      ANDROID_SHA256_FINGERPRINT: ${ANDROID_SHA256_FINGERPRINT:?set ANDROID_SHA256_FINGERPRINT in .env (release keystore SHA-256 — see SECRETS.md §5b)}
-      NGINX_ENVSUBST_FILTER: "IOS_TEAM_ID|ANDROID_SHA256_FINGERPRINT"
+      DEPLOY_DOMAIN: "${DEPLOY_DOMAIN:?set DEPLOY_DOMAIN in .env}"
+      IOS_TEAM_ID: ${IOS_TEAM_ID:-}
+      ANDROID_SHA256_FINGERPRINT: ${ANDROID_SHA256_FINGERPRINT:-}
+      NGINX_ENVSUBST_FILTER: "DEPLOY_DOMAIN|IOS_TEAM_ID|ANDROID_SHA256_FINGERPRINT"
     volumes:
       - ./nginx/templates:/etc/nginx/templates:ro
-      - ./nginx/certs:/etc/nginx/certs:ro
-      - certbot_data:/var/www/certbot:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - certbot_webroot:/var/www/certbot:ro
     healthcheck:
       test: ["CMD", "nginx", "-t"]
       interval: 30s
       timeout: 10s
       retries: 3
 
+  # ──────────── TLS (Let's Encrypt) ────────────
+  # 자동 기동 안 함(profiles). 최초 발급/갱신은 run --rm 로 호출 (bootstrap.sh 참조):
+  #   docker compose run --rm certbot certonly --webroot -w /var/www/certbot -d "$DEPLOY_DOMAIN" ...
+  #   docker compose run --rm certbot renew   # host cron 권장, --deploy-hook 로 nginx reload
+  certbot:
+    image: certbot/certbot
+    container_name: tw-certbot
+    profiles: ["tools"]
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot_webroot:/var/www/certbot
+
   # ──────────── Backup ────────────
   db-backup:
     image: postgres:16-alpine
     container_name: tw-db-backup
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       PGHOST: postgres
-      PGUSER: terraworld
-      PGPASSWORD: ${DB_PASSWORD:-terraworld}
-      PGDATABASE: terraworld
+      PGUSER: ${DB_USER}
+      PGPASSWORD: ${DB_PASSWORD}
+      PGDATABASE: ${DB_NAME}
     volumes:
       - ./backups:/backups
     entrypoint: >
@@ -116,4 +129,5 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  certbot_data:
+  letsencrypt:
+  certbot_webroot:
