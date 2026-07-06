@@ -66,17 +66,18 @@ cd /opt/terraworld
 > `deploy.yml` 은 이미지 태그를 push 하지만 서버는 compose 의 `${TAG}`(기본 latest)를 pull 한다.
 > 정확한 롤백 원하면 서버 `.env` 의 `TAG` 를 커밋 SHA 로 두고 배포마다 갱신.
 
-## 6. 모바일 프로덕션 빌드 (도메인 확정 후)
-앱은 `server.url` 을 **빌드타임에 baking**. 프로덕션 URL 은 이제 env 로 파라미터화됨:
+## 6. 모바일 프로덕션 빌드 (도메인 확정됨 — `terraworld.web-qplay.kr`)
+앱은 `server.url` 을 **빌드타임에 baking**. 프로덕션 URL 은 env 로 파라미터화됨:
 - `mobile/capacitor.config.ts` production = `process.env.MOBILE_PROD_URL ?? 'https://terraworld.app'`.
-- 프로덕션 빌드 시 `MOBILE_PROD_URL=https://<DEPLOY_DOMAIN>` 주입 (release.yml 에 반영 필요).
-- **Universal/App Links**(선택, deep link): 도메인 확정 시 아래를 서브도메인으로 교체 후 재빌드
-  - `mobile/ios/App/App/App.entitlements` 의 `applinks:terraworld.app`
-  - `mobile/android/app/src/main/AndroidManifest.xml` 의 applinks host
-  - (앱 기본 동작엔 불필요 — WebView 로딩은 applinks 무관)
-- ⚠️ `mobile/.github/workflows/release.yml` 에는 이번 LAN 테스트에서 잡은 버그(admob 8,
-  `-project`, 무서명→서명, Xcode 26, 기기등록)가 아직 미반영. 프로덕션 빌드 전 동일 수정 필요.
-  (LAN 테스트용 `ios-lan-test.yml` 은 수정 완료 — 참고 대상)
+- 프로덕션 빌드 시 `MOBILE_PROD_URL=https://terraworld.web-qplay.kr` 를 repo variable 로 설정
+  (android-release/ios-release 두 job 모두 이 변수를 전달하도록 이미 반영됨 — 값 자체만 설정하면 됨).
+- **Universal/App Links**: `terraworld.app` → `terraworld.web-qplay.kr` 로 교체 완료
+  (`App.entitlements`, `AndroidManifest.xml` 둘 다 — 2026-07-06 커밋).
+- ~~release.yml 미반영 버그(admob 8, `-project`, 무서명→서명, Xcode 26, 기기등록)~~ —
+  **이미 반영됨** (커밋 `441e1ad`, 2026-07-03). 이후 추가로: Android 서명(keystore + 4개
+  GitHub secret) 및 Firebase App Distribution(테스터 배포, Android 전용 — iOS 는 TestFlight
+  유지) 도 구성·`workflow_dispatch` 실행으로 실제 검증 완료 (2026-07-06). 남은 것은 `MOBILE_PROD_URL`
+  repo variable 값 설정뿐.
 
 ## 7. 검증 체크리스트
 - [ ] `https://<DEPLOY_DOMAIN>/` → 200 (Nuxt SSR)
