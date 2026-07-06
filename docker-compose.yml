@@ -104,27 +104,9 @@ services:
       - letsencrypt:/etc/letsencrypt
       - certbot_webroot:/var/www/certbot
 
-  # ──────────── Backup ────────────
-  db-backup:
-    image: postgres:16-alpine
-    container_name: tw-db-backup
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      PGHOST: postgres
-      PGUSER: ${DB_USER}
-      PGPASSWORD: ${DB_PASSWORD}
-      PGDATABASE: ${DB_NAME}
-    volumes:
-      - ./backups:/backups
-    entrypoint: >
-      sh -c "while true; do
-        pg_dump -Fc > /backups/terraworld_$$(date +%Y%m%d_%H%M%S).dump;
-        find /backups -name '*.dump' -mtime +7 -delete;
-        sleep 86400;
-      done"
+  # 백업은 docker compose 서비스가 아니라 host cron 으로 관리한다.
+  # scripts/pg-backup.sh + scripts/crontab.terraworld-backup 참고 (S3/GPG/Discord 알림 포함,
+  # docs/dr-runbook.md 가 인용하는 실제 백업 메커니즘).
 
 volumes:
   postgres_data:
