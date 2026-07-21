@@ -47,6 +47,7 @@ PAT 권한: `repo` (read). 발급 위치: GitHub Account → Settings → Develo
 | `NUXT_PUBLIC_ADSENSE_CLIENT` | AdSense `ca-pub-...` ID | 공개 |
 | `NUXT_PUBLIC_ADSENSE_SLOT` | AdSense 슬롯 ID | 공개 |
 | `NUXT_PUBLIC_ADMOB_REWARDED_AD_ID` | AdMob 보상형 광고 단위 ID | 공개 |
+| `NUXT_PUBLIC_META_APP_ID` | Meta 앱 ID `1768257850852519` — 인스타 스토리 직공유 source_application. ci.yml deploy 단계가 호스트 `.env` 에 멱등 주입 | 공개 |
 
 ---
 
