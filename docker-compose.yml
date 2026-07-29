@@ -2,6 +2,11 @@
 # 인프라 종속값은 전부 deploy/.env 로 외부화 (.env.production.example 참고).
 # 기동: deploy/scripts/bootstrap.sh (권장) 또는 아래 순서 수동 실행.
 #   1) .env 작성  2) certbot 최초 발급  3) docker compose up -d
+#
+# ⚠️ 이 파일 하나만 보고 프로덕션을 판단하지 말 것 (TOPO-1).
+#    실 배포는 `-f docker-compose.yml -f docker-compose.tunnel.yml` 조합으로 뜨는데,
+#    그 override 파일은 배포 호스트에만 있고 버전 관리되지 않는다. 여기서 고친 설정이
+#    override 에 덮여 프로덕션에 반영되지 않을 수 있다. → docs/TOPOLOGY-GAP.md
 # ─────────────────────────────────────────────────────────────────────────
 services:
   # ──────────── Infrastructure ────────────

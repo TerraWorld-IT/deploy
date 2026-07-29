@@ -7,6 +7,13 @@
 > ⚠️ 본 설정은 대상 인프라에서 실측되지 않음(개발 측에 서버 없음). 첫 배포 시 각 단계
 > 로그를 확인하며 진행할 것. 문제 시 이슈로 회신.
 
+> 🚨 **아래 §0 구성 요약은 현재 실 운영 토폴로지와 다를 수 있다 (TOPO-1).** 실 배포는
+> `docker-compose.yml` 에 **버전 관리되지 않는** `docker-compose.tunnel.yml` 을 얹어서
+> 뜨고(양쪽 CI 의 배포 job), 그 override 파일은 배포 호스트에만 있어 내용을 확인할 수
+> 없다. 진입 경로가 아래 nginx 직접 노출 모델이 아니라 Cloudflare Tunnel 일 가능성이
+> 크다. 인프라를 손대기 전에 반드시 [TOPOLOGY-GAP.md](./TOPOLOGY-GAP.md) 를 먼저 읽고
+> override 파일을 회수할 것.
+
 ## 0. 구성 요약
 ```
    인터넷 ──▶ nginx(80/443, TLS) ──▶ /api/auth/* → frontend(Nitro, better-auth)
@@ -68,7 +75,8 @@ cd /opt/terraworld
 
 ## 6. 모바일 프로덕션 빌드 (도메인 확정됨 — `terraworld.web-qplay.kr`)
 앱은 `server.url` 을 **빌드타임에 baking**. 프로덕션 URL 은 env 로 파라미터화됨:
-- `mobile/capacitor.config.ts` production = `process.env.MOBILE_PROD_URL ?? 'https://terraworld.app'`.
+- `mobile/capacitor.config.ts` production = `process.env.MOBILE_PROD_URL ?? 'https://terraworld.web-qplay.kr'`
+  (fallback 도 이미 신 도메인이다 — 이 문서가 구 도메인 `terraworld.app` 으로 적고 있었다).
 - 프로덕션 빌드 시 `MOBILE_PROD_URL=https://terraworld.web-qplay.kr` 를 repo variable 로 설정
   (android-release/ios-release 두 job 모두 이 변수를 전달하도록 이미 반영됨 — 값 자체만 설정하면 됨).
 - **Universal/App Links**: `terraworld.app` → `terraworld.web-qplay.kr` 로 교체 완료

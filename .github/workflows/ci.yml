@@ -1,0 +1,79 @@
+name: CI
+
+# 이 repo 는 프로덕션 토폴로지의 SoT 인데 그동안 게이트가 하나도 없었다(CONV-01).
+# 2인 팀이 운영하므로 정교한 파이프라인 대신, 사람이 손으로 고치는 설정 파일에서
+# 실제로 터지는 4가지만 막는다:
+#   1) compose 파일이 해석 불가 → 배포 당일 서버에서야 발견
+#   2) 셸 스크립트의 확정적 버그 → 백업/부트스트랩이 조용히 실패
+#   3) YAML 구조 오류(중복 키·들여쓰기) → 값이 에러 없이 무시됨
+#   4) db/auth SQL 사본 변조 → 프로덕션 최초 기동 시 Flyway V5 의 교차 스키마 FK 실패
+#
+# 일부러 넣지 않은 것:
+#   - 실 배포/스모크: 시크릿(DEPLOY_SSH_KEY 등)과 실서버가 필요하고, PR 마다 돌 수 없다.
+#   - frontend 원본과의 cross-repo SQL 대조: private repo 라 PAT 가 있어야 checkout 된다.
+#     시크릿을 새로 만들지 않기로 해서 로컬 체크섬만 건다(db/auth/README.md 에 한계 명시).
+#   - nginx -t: upstream 호스트 이름(frontend/backend) 해석과 TLS 인증서가 필요해
+#     스텁을 세워야 하고, 그 스텁이 실제 설정과 어긋나면 오히려 거짓 신호가 된다.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: 설정 게이트
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 린터 준비
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq yamllint
+          shellcheck --version >/dev/null 2>&1 || sudo apt-get install -y -qq shellcheck
+
+      # compose 는 `env_file: .env` 를 요구하는데 .env 는 gitignore 대상이라 체크아웃에 없다.
+      # env.production.example 을 그대로 .env 로 써서 검증한다 — 덤으로 "예시 파일만 복사해도
+      # compose 가 해석되는가"(README 가 안내하는 절차)까지 같이 보증된다.
+      # DEPLOY_DOMAIN 은 `${VAR:?}` fail-fast 가드가 걸려 있어 더미 값을 준다.
+      - name: compose 해석 검증 (prod)
+        run: |
+          cp env.production.example .env
+          DEPLOY_DOMAIN=ci.invalid docker compose -f docker-compose.yml config --quiet
+          rm -f .env
+
+      - name: compose 해석 검증 (dev)
+        run: docker compose -f docker-compose.dev.yml config --quiet
+
+      # severity=warning — info/style 까지 켜면 기존 스크립트에 잔소리가 쌓여 게이트가 무력해진다.
+      # warning 이상은 "실행하면 실제로 다르게 동작하는" 부류만 남는다.
+      - name: shellcheck
+        run: shellcheck --severity=warning scripts/*.sh
+
+      - name: yamllint
+        run: yamllint -c .yamllint.yml docker-compose.yml docker-compose.dev.yml .github/workflows/ci.yml
+
+      # db/auth/*.sql 은 frontend/server/db/migrations 의 손복사본이고, backend Flyway V5 의
+      # 교차 스키마 FK 가 여기에 의존한다. 조용한 변조가 프로덕션 최초 기동을 깨뜨린다.
+      # ⚠️ 이 검사가 증명하는 것은 로컬 무결성뿐 — frontend 원본과 같은지는 보지 못한다.
+      #    cross-repo 대조 방법은 db/auth/README.md 참고(사람이 직접).
+      - name: db/auth SQL 체크섬
+        working-directory: db/auth
+        run: |
+          sha256sum -c CHECKSUMS.txt
+          # sha256sum -c 는 매니페스트에 '없는' 파일은 그냥 지나친다. 개수로 추가분을 잡는다.
+          have=$(find . -maxdepth 1 -name '*.sql' | wc -l)
+          want=$(wc -l < CHECKSUMS.txt)
+          if [ "$have" -ne "$want" ]; then
+            echo "::error::SQL $have 개 / 매니페스트 $want 줄 — CHECKSUMS.txt 재생성 필요"
+            exit 1
+          fi

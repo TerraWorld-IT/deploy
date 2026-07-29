@@ -13,6 +13,7 @@ cd "$(dirname "$0")/.."   # deploy/
 
 log() { printf '\033[1;32m[bootstrap]\033[0m %s\n' "$*"; }
 err() { printf '\033[1;31m[bootstrap:ERROR]\033[0m %s\n' "$*" >&2; }
+# shellcheck disable=SC2034  # ans 는 아래 eval 안에서 쓰인다 — 정적 분석이 못 보는 사용처
 ask() { # ask VAR "prompt" "default"
   eval "cur=\${$1:-}"; if [ -n "${cur:-}" ]; then return 0; fi
   printf '%s [%s]: ' "$2" "${3:-}"; read ans || true

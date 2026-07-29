@@ -1,0 +1,24 @@
+# yamllint 설정 — 노이즈 없이 "진짜 깨지는 것"만 잡는 게 목적.
+#
+# 이 repo 의 YAML 은 compose 파일과 워크플로뿐이고, 사람이 손으로 고친다.
+# 그래서 들여쓰기·중복키·탭처럼 파싱 결과를 바꾸는 것만 error 로 두고,
+# 줄 길이·주석 스타일 같은 취향 규칙은 끈다. (규칙이 잔소리가 되면 아무도 안 본다.)
+extends: default
+
+rules:
+  # 긴 URL·긴 healthcheck 커맨드가 많다. 줄바꿈 강요는 오히려 가독성을 해친다.
+  line-length: disable
+  # `---` 문서 시작 마커는 이 repo 관례가 아니다.
+  document-start: disable
+  # 주석 들여쓰기/앞 공백은 스타일 영역.
+  comments: disable
+  comments-indentation: disable
+  # GitHub Actions 의 `on:` 키는 YAML 1.1 에서 boolean 으로 읽혀 truthy 경고가 난다.
+  # 값 쪽 truthy 검사는 유지하되 키는 제외.
+  truthy:
+    check-keys: false
+  # 빈 값(`R2_ENDPOINT:` 같은 형태)은 compose/워크플로에서 정상 표현.
+  empty-values: disable
+  # 아래는 default 유지 — 전부 "실제로 파싱이 달라지는" 부류다.
+  #   key-duplicates / indentation / trailing-spaces / new-line-at-end-of-file /
+  #   colons / commas / brackets / braces / hyphens / octal-values

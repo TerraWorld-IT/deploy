@@ -5,7 +5,11 @@
 # 사용:
 #   bash scripts/check-applinks.sh [base-url]
 #
-# 기본 base-url: https://terraworld.app
+# base-url 결정 순서:
+#   1) 인자로 준 값
+#   2) 환경변수 DEPLOY_DOMAIN (deploy/.env 의 그 값) → https://$DEPLOY_DOMAIN
+#   3) 기본값 https://terraworld.web-qplay.kr   ← 실제 배포 도메인
+# 예:  . ./.env && bash scripts/check-applinks.sh      # .env 의 도메인 그대로 검증
 #
 # 검사 항목:
 #   1) HTTP 200 응답 확인
@@ -21,7 +25,7 @@
 
 set -uo pipefail
 
-BASE_URL="${1:-https://terraworld.app}"
+BASE_URL="${1:-https://${DEPLOY_DOMAIN:-terraworld.web-qplay.kr}}"
 EXPECTED_BUNDLE="app.terraworld.mobile"
 
 fail=0
