@@ -1,3 +1,5 @@
 .env
+/mac-host.env
+/.env.bootstrap.*
 nginx/certs/
 backups/
