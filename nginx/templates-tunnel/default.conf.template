@@ -1,0 +1,72 @@
+# Cloudflare Tunnel 앞단 nginx (HTTP-only). TLS 는 Cloudflare 엣지가 종단하고
+# cloudflared → 이 nginx(:80) 로 평문 전달. 그래서 443/certbot/acme 블록 없음.
+# X-Forwarded-Proto 는 https 로 하드코딩(엣지가 https 이므로) — better-auth 쿠키/URL 정상화.
+# envsubst 대상: DEPLOY_DOMAIN|IOS_TEAM_ID|ANDROID_SHA256_FINGERPRINT (NGINX_ENVSUBST_FILTER)
+
+upstream frontend { server frontend:3000; }
+upstream backend  { server backend:8080; }
+
+server {
+    listen 80 default_server;
+    server_name _;
+
+    # Apple App Site Association (Universal Links)
+    location = /.well-known/apple-app-site-association {
+        default_type application/json;
+        return 200 '{"applinks":{"details":[{"appIDs":["${IOS_TEAM_ID}.app.terraworld.mobile"],"paths":["/share/*"]}]}}';
+    }
+
+    # Android App Links
+    location = /.well-known/assetlinks.json {
+        default_type application/json;
+        return 200 '[{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"android_app","package_name":"app.terraworld.mobile","sha256_cert_fingerprints":["${ANDROID_SHA256_FINGERPRINT}"]}}]';
+    }
+
+    # 보안 헤더
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # 인증 (better-auth / Nitro) — /api/auth/* (JWKS 포함). longest-prefix 로 /api/ 보다 우선.
+    location /api/auth/ {
+        proxy_pass http://frontend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    # 비즈니스 API (Spring) — /api/v1/*, swagger 등
+    location /api/ {
+        proxy_pass http://backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+
+    location /swagger-ui/ { proxy_pass http://backend; proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto https; }
+    location /api-docs   { proxy_pass http://backend; proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto https; }
+
+    # 정적 자산 — 7일 캐시
+    location ~* \.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2)$ {
+        proxy_pass http://frontend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # Frontend (Nuxt SSR + WebSocket)
+    location / {
+        proxy_pass http://frontend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
