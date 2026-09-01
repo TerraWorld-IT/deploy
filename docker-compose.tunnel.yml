@@ -1,0 +1,33 @@
+# Cloudflare Tunnel 배포용 오버레이 (맥 로컬 호스팅).
+# 사용: docker compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d postgres redis backend frontend nginx-tunnel
+# 기본 nginx/certbot(443, TLS) 대신 nginx-tunnel(HTTP 80)을 사용 — cloudflared 가 TLS 종단.
+# cloudflared 는 nginx-tunnel(127.0.0.1:8090) 단일 진입 → nginx 가 문서대로 라우팅+applinks.
+services:
+  backend:
+    ports:
+      - "127.0.0.1:18080:8080"   # 디버깅용(선택). 실트래픽은 nginx-tunnel 경유.
+  frontend:
+    ports:
+      - "127.0.0.1:13000:3000"   # 디버깅용(선택).
+
+  nginx-tunnel:
+    image: nginx:alpine
+    container_name: tw-nginx-tunnel
+    restart: unless-stopped
+    depends_on:
+      - frontend
+      - backend
+    environment:
+      DEPLOY_DOMAIN: "${DEPLOY_DOMAIN:?set DEPLOY_DOMAIN in .env}"
+      IOS_TEAM_ID: ${IOS_TEAM_ID:-}
+      ANDROID_SHA256_FINGERPRINT: ${ANDROID_SHA256_FINGERPRINT:-}
+      NGINX_ENVSUBST_FILTER: "DEPLOY_DOMAIN|IOS_TEAM_ID|ANDROID_SHA256_FINGERPRINT"
+    volumes:
+      - ./nginx/templates-tunnel:/etc/nginx/templates:ro
+    ports:
+      - "127.0.0.1:18090:80"
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
