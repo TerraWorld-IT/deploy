@@ -1,0 +1,163 @@
+name: Deploy (central)
+
+# workspace#3 결정: 배포 소유권을 deploy 저장소의 중앙 워크플로에 둔다.
+# backend·frontend 이미지 "쌍"을 수동으로 선택해 self-hosted Mac 에 배포하고,
+# 같은 입력으로 이전 태그 쌍을 재지정해 쌍 단위 rollback 한다.
+#
+# 사용:
+#   Actions → Deploy (central) → Run workflow
+#     backend_tag  : 배포할 backend 이미지 태그 (기본 latest, 예: <backend main SHA>)
+#     frontend_tag : 배포할 frontend 이미지 태그 (기본 latest, 예: <frontend main SHA>)
+#   rollback = 이전에 성공한 실행의 두 태그를 그대로 다시 입력해 재실행.
+#
+# 이미지 build·push 는 각 backend/frontend CI 가 계속 담당한다(태그=각 저장소 SHA).
+# 이 워크플로는 "이미 push 된 두 이미지의 검증된 쌍을 운영에 반영"만 한다.
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend_tag:
+        description: "backend 이미지 태그 (ghcr.io/terraworld-it/terraworld-backend:<tag>)"
+        required: true
+        default: "latest"
+      frontend_tag:
+        description: "frontend 이미지 태그 (ghcr.io/terraworld-it/terraworld-frontend:<tag>)"
+        required: true
+        default: "latest"
+      restart_nginx:
+        description: "배포 후 nginx-tunnel 재시작 (upstream 컨테이너 IP 재해석)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: terraworld-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy image pair (self-hosted Mac)
+    runs-on: [self-hosted, terraworld]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    env:
+      REGISTRY: ghcr.io/terraworld-it
+      BACKEND_TAG: ${{ inputs.backend_tag }}
+      FRONTEND_TAG: ${{ inputs.frontend_tag }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GHCR_USER: ${{ github.actor }}
+    steps:
+      - name: Resolve deploy dir + ghcr auth
+        id: prep
+        run: |
+          set -euo pipefail
+          export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+
+          # 배포 디렉터리: TERRAWORLD_DEPLOY_DIR 우선, 미설정 시 기존 호스트 경로 폴백
+          # (backend#69 / frontend#45 / deploy#8 bootstrap 과 동일 규약).
+          DEFAULT_DEPLOY=/Users/jaeseok/TerraWorld-IT/deploy
+          if [ "${TERRAWORLD_DEPLOY_DIR+x}" = x ]; then
+            DEPLOY=$TERRAWORLD_DEPLOY_DIR
+          else
+            DEPLOY=$DEFAULT_DEPLOY
+            printf '%s\n' 'TERRAWORLD_DEPLOY_DIR 미설정: 기존 호스트 배포 경로를 사용합니다.'
+          fi
+          case "$DEPLOY" in
+            /*) ;;
+            *) echo "::error::TERRAWORLD_DEPLOY_DIR 는 절대 경로여야 합니다."; exit 1 ;;
+          esac
+          [ -f "$DEPLOY/docker-compose.yml" ] || { echo "::error::$DEPLOY 에 docker-compose.yml 이 없습니다."; exit 1; }
+          echo "deploy_dir=$DEPLOY" >> "$GITHUB_OUTPUT"
+
+          # 비대화형 맥 러너는 osxkeychain 잠김으로 docker login 불가 —
+          # 임시 DOCKER_CONFIG 에 ghcr auth 직접 기록 (backend/frontend deploy 와 동일).
+          TMPCFG="$(mktemp -d)"
+          echo "docker_config=$TMPCFG" >> "$GITHUB_OUTPUT"
+          if [ -d "$HOME/.docker/cli-plugins" ]; then
+            ln -s "$HOME/.docker/cli-plugins" "$TMPCFG/cli-plugins"
+          fi
+          GHCR_AUTH="$(printf '%s:%s' "$GHCR_USER" "$GHCR_TOKEN" | base64 | tr -d '\n')"
+          umask 077
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$GHCR_AUTH" > "$TMPCFG/config.json"
+          unset GHCR_AUTH
+
+      - name: Verify BOTH images exist before any change
+        env:
+          DOCKER_CONFIG: ${{ steps.prep.outputs.docker_config }}
+        run: |
+          set -euo pipefail
+          export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+          fail=0
+          for pair in "backend:$BACKEND_TAG" "frontend:$FRONTEND_TAG"; do
+            svc=${pair%%:*}; tag=${pair#*:}
+            ref="$REGISTRY/terraworld-$svc:$tag"
+            if digest=$(docker manifest inspect "$ref" 2>/dev/null | sha256sum | cut -d' ' -f1); then
+              echo "✅ $ref 존재"
+            else
+              echo "::error::이미지가 존재하지 않습니다: $ref"; fail=1
+            fi
+          done
+          [ "$fail" = 0 ] || { echo "::error::두 이미지 중 하나라도 없으면 운영을 변경하지 않고 실패합니다."; exit 1; }
+
+      - name: Deploy image pair
+        env:
+          DOCKER_CONFIG: ${{ steps.prep.outputs.docker_config }}
+        run: |
+          set -euo pipefail
+          export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+          cd "${{ steps.prep.outputs.deploy_dir }}"
+          export BACKEND_TAG FRONTEND_TAG
+          COMPOSE="docker compose -f docker-compose.yml -f docker-compose.tunnel.yml"
+          $COMPOSE pull backend frontend
+          $COMPOSE up -d --no-deps backend frontend
+          if [ "${{ inputs.restart_nginx }}" = "true" ]; then
+            # 컨테이너 재생성으로 바뀐 upstream IP 를 nginx 가 다시 해석하도록 재시작.
+            docker restart tw-nginx-tunnel
+          fi
+
+      - name: Wait for health (backend + frontend)
+        run: |
+          set -euo pipefail
+          export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+          # 맥은 amd64 이미지를 Rosetta 로 실행해 Spring 부팅이 ~100초 걸린다 → 300초 예산.
+          for c in tw-backend tw-frontend; do
+            ok=0
+            for i in $(seq 1 60); do
+              s=$(docker inspect --format '{{.State.Health.Status}}' "$c" 2>/dev/null || echo n/a)
+              case "$s" in
+                healthy) echo "✅ $c healthy"; ok=1; break ;;
+                n/a) echo "✅ $c (healthcheck 미정의) 실행 확인"; ok=1; break ;;
+              esac
+              sleep 5
+            done
+            [ "$ok" = 1 ] || { echo "::error::$c not healthy"; docker logs --tail 50 "$c" || true; exit 1; }
+          done
+
+      - name: Record deployed pair (release record)
+        if: always()
+        env:
+          DOCKER_CONFIG: ${{ steps.prep.outputs.docker_config }}
+        run: |
+          set -euo pipefail
+          export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+          be_ref="$REGISTRY/terraworld-backend:$BACKEND_TAG"
+          fe_ref="$REGISTRY/terraworld-frontend:$FRONTEND_TAG"
+          be_digest=$(docker inspect --format '{{index .RepoDigests 0}}' tw-backend 2>/dev/null || echo "n/a")
+          fe_digest=$(docker inspect --format '{{index .RepoDigests 0}}' tw-frontend 2>/dev/null || echo "n/a")
+          {
+            echo "## 배포된 이미지 쌍"
+            echo ""
+            echo "| 서비스 | 태그 | digest |"
+            echo "|--------|------|--------|"
+            echo "| backend  | \`$BACKEND_TAG\`  | \`$be_digest\` |"
+            echo "| frontend | \`$FRONTEND_TAG\` | \`$fe_digest\` |"
+            echo ""
+            echo "설정: \`docker-compose.yml\` + \`docker-compose.tunnel.yml\` @ \`${{ github.sha }}\`"
+            echo ""
+            echo "**Rollback**: 이전에 성공한 실행의 backend_tag·frontend_tag 를 그대로 다시 입력해 재실행."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup ghcr auth
+        if: always()
+        run: rm -rf "${{ steps.prep.outputs.docker_config }}" || true
