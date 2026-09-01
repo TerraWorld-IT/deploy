@@ -92,7 +92,9 @@ jobs:
           for pair in "backend:$BACKEND_TAG" "frontend:$FRONTEND_TAG"; do
             svc=${pair%%:*}; tag=${pair#*:}
             ref="$REGISTRY/terraworld-$svc:$tag"
-            if digest=$(docker manifest inspect "$ref" 2>/dev/null | sha256sum | cut -d' ' -f1); then
+            # 존재 여부만 확인한다. macOS 러너에는 sha256sum 이 없어 digest 계산은 하지 않는다
+            # (digest 는 배포 후 Record 스텝에서 RepoDigests 로 기록).
+            if docker manifest inspect "$ref" >/dev/null 2>&1; then
               echo "✅ $ref 존재"
             else
               echo "::error::이미지가 존재하지 않습니다: $ref"; fail=1
