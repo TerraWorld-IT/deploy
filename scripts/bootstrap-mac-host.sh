@@ -89,15 +89,15 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
-SOURCE_DEPLOY_DIR=$(CDPATH= cd "$SCRIPT_DIR/.." && pwd -P)
+SCRIPT_DIR=$(CDPATH='' cd "$(dirname "$0")" && pwd -P)
+SOURCE_DEPLOY_DIR=$(CDPATH='' cd "$SCRIPT_DIR/.." && pwd -P)
 if [ -z "$CONFIG_FILE" ]; then
   CONFIG_FILE=$SOURCE_DEPLOY_DIR/mac-host.env
 fi
 
 # 존재하는 상대 경로는 저장소 내부 판정과 메시지가 일관되도록 물리 절대 경로로 정규화한다.
 if [ -e "$CONFIG_FILE" ] || [ -L "$CONFIG_FILE" ]; then
-  CONFIG_PARENT=$(CDPATH= cd "$(dirname "$CONFIG_FILE")" && pwd -P) || {
+  CONFIG_PARENT=$(CDPATH='' cd "$(dirname "$CONFIG_FILE")" && pwd -P) || {
     printf '[오류] 값 파일의 상위 디렉터리를 확인할 수 없습니다: %s\n' "$CONFIG_FILE" >&2
     exit 2
   }
@@ -114,13 +114,10 @@ DEPLOY_DIR_CONFIG_READY=0
 RUNNER_DIR_CONFIG_READY=0
 RUNNER_SCOPE_CONFIG_READY=0
 RUNNER_NAME_CONFIG_READY=0
-COMPOSE_CONFIG_READY=0
 DEPLOY_ENV_NEEDS_CREATE=0
 RUNNER_ENV_ACTION=none
-RUNNER_ENV_CHANGED=0
 RUNNER_ENV_READY=0
 SERVICE_ACTION=none
-SERVICE_IS_RUNNING=0
 
 DOCKER_READY=0
 DOCKER_CLI_READY=0
@@ -656,7 +653,6 @@ apply_runner_env() {
     else
       changed "$RUNNER_ENV_FILE 에 TERRAWORLD_DEPLOY_DIR 원자적 추가(기존 내용 보존, 교체 파일 권한 600)."
     fi
-    RUNNER_ENV_CHANGED=1
     RUNNER_ENV_READY=1
   fi
 
@@ -807,7 +803,6 @@ if [ -f "$DEPLOY_ENV" ]; then
 elif [ "$CONFIG_FILE_READY" -eq 1 ] && [ "$DEPLOY_DIR_CONFIG_READY" -eq 1 ]; then
   if extract_compose_payload &&
     validate_env_values "$COMPOSE_PAYLOAD_TMP" '값 파일 compose payload' strict; then
-    COMPOSE_CONFIG_READY=1
     COMPOSE_ENV_FOR_VALIDATION=$COMPOSE_PAYLOAD_TMP
     ok 'marker 안에서 추출한 deploy/.env 생성 payload 검증 완료.'
     if [ "$MODE" = apply ] && [ "$DEPLOY_DIR_EXISTS" -eq 1 ] &&
@@ -883,7 +878,6 @@ else
 
     if [ -f "$TERRAWORLD_RUNNER_DIR/svc.sh" ]; then
       if runner_service_running "$TERRAWORLD_RUNNER_DIR"; then
-        SERVICE_IS_RUNNING=1
         if [ "$RUNNER_ENV_ACTION" != none ]; then
           blocker '실행 중인 runner에 .env 변경이 필요합니다. bootstrap은 기존 서비스를 중지하지 않으므로 운영자가 먼저 안전하게 중지한 뒤 --apply를 재실행하세요.'
         elif [ "$RUNNER_ENV_READY" -eq 1 ]; then
