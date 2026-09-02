@@ -10,9 +10,13 @@
 frontend / backend 두 repo 의 배포 job 이 **둘 다** 같은 override 파일을 얹어서 스택을 띄운다.
 
 ```bash
-# backend/.github/workflows/ci.yml:178-179
-# frontend/.github/workflows/ci.yml:228-229
-cd /Users/jaeseok/TerraWorld-IT/deploy
+# 경로 선택/검증: backend/.github/workflows/ci.yml:161-184
+# 경로 선택/검증: frontend/.github/workflows/ci.yml:192-215
+# 실제 deploy: backend/.github/workflows/ci.yml:200-202
+# 실제 deploy: frontend/.github/workflows/ci.yml:240,252-253
+# 미설정이면 기존 경로, 설정됐으면 절대 경로·디렉터리·base compose를 검증
+DEPLOY="<검증을 통과한 실제 절대 경로>"
+cd "$DEPLOY"
 docker compose -f docker-compose.yml -f docker-compose.tunnel.yml pull   <서비스>
 docker compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d --no-deps <서비스>
 ```
@@ -25,7 +29,7 @@ find . -name docker-compose.tunnel.yml     # 출력 없음
 cd deploy && git ls-files | grep tunnel    # 출력 없음
 ```
 
-즉 그 파일은 배포 호스트(`/Users/jaeseok/TerraWorld-IT/deploy`)의 로컬 디스크에만 있고,
+즉 그 파일은 배포 호스트에서 검증된 실제 배포 절대 경로의 로컬 디스크에만 있고,
 백업도 없고, 무엇이 들어 있는지 아무도 확인할 수 없다.
 
 ## 왜 이게 중요한가
@@ -54,7 +58,9 @@ cd deploy && git ls-files | grep tunnel    # 출력 없음
 
    ```bash
    ssh <배포호스트>
-   cat /Users/jaeseok/TerraWorld-IT/deploy/docker-compose.tunnel.yml
+   # mac-host.env의 TERRAWORLD_DEPLOY_DIR 값을 확인해 아래 경로 자체를 실제 절대 경로로 바꾼다.
+   # runner .env는 로그인 셸에 export되지 않으므로 $TERRAWORLD_DEPLOY_DIR를 사용하지 않는다.
+   cat "/absolute/path/to/terraworld-deploy/docker-compose.tunnel.yml"
    ```
 
 2. 내용에 시크릿(토큰·터널 자격증명 등)이 있는지 확인한다.
