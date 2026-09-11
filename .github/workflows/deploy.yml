@@ -130,12 +130,15 @@ jobs:
           export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
           # 맥은 amd64 이미지를 Rosetta 로 실행해 Spring 부팅이 ~100초 걸린다 → 300초 예산.
           for c in tw-backend tw-frontend; do
+            state=$(docker inspect --format '{{.State.Status}}' "$c" 2>/dev/null) || { echo "::error::$c 컨테이너 조회 실패(부재 또는 Docker 오류)"; exit 1; }
+            [ "$state" = "running" ] || { echo "::error::$c 실행 중 아님: $state"; docker logs --tail 50 "$c" || true; exit 1; }
             ok=0
-            for i in $(seq 1 60); do
-              s=$(docker inspect --format '{{.State.Health.Status}}' "$c" 2>/dev/null || echo n/a)
+            for _ in $(seq 1 60); do
+              s=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$c" 2>/dev/null || echo error)
               case "$s" in
                 healthy) echo "✅ $c healthy"; ok=1; break ;;
-                n/a) echo "✅ $c (healthcheck 미정의) 실행 확인"; ok=1; break ;;
+                none) echo "✅ $c (healthcheck 미정의) 실행 확인"; ok=1; break ;;
+                error) echo "::error::$c health 조회 실패"; exit 1 ;;
               esac
               sleep 5
             done
