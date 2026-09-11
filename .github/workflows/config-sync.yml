@@ -1,0 +1,200 @@
+name: Config sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'nginx/**'
+      - 'docker-compose.yml'
+      - 'docker-compose.tunnel.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 이 워크플로끼리 직렬화한다. 별도 앱 CI와의 완전한 배타 잠금은 아니다.
+concurrency:
+  group: deploy-config-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, terraworld]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate and apply config
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 앱 CI와 공유하는 호스트 락으로 검증부터 적용까지 직렬화한다.
+          DEPLOY_LOCK="${TERRAWORLD_DEPLOY_LOCK:-/tmp/terraworld-deploy.lock}"
+          acquire_deploy_lock() {
+            local waited=0 timeout=900 stale=1800 age now mtime
+            while ! mkdir "$DEPLOY_LOCK" 2>/dev/null; do
+              now=$(date +%s)
+              mtime=$(stat -f %m "$DEPLOY_LOCK" 2>/dev/null || stat -c %Y "$DEPLOY_LOCK" 2>/dev/null || echo "$now")
+              age=$(( now - mtime ))
+              if [ "$age" -gt "$stale" ]; then rmdir "$DEPLOY_LOCK" 2>/dev/null || true; continue; fi
+              if [ "$waited" -ge "$timeout" ]; then echo "::error::배포 락 획득 타임아웃(${timeout}s)"; exit 1; fi
+              sleep 5; waited=$(( waited + 5 ))
+            done
+            printf '%s %s\n' "${GITHUB_WORKFLOW:-?}" "${GITHUB_RUN_ID:-?}" > "$DEPLOY_LOCK/owner" 2>/dev/null || true
+          }
+          release_deploy_lock() { rm -rf "$DEPLOY_LOCK" 2>/dev/null || true; }
+          trap release_deploy_lock EXIT
+          acquire_deploy_lock
+          export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+          fail() { echo "::error::$*"; exit 1; }
+          skip() { printf 'Config sync 건너뜀: %s (%s)\n' "$1" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          command -v python3 >/dev/null || fail 'Compose JSON 검증에 필요한 python3가 없습니다.'
+
+          # 앱 CI와 동일한 호스트 경로 해석. 명시된 빈 값은 폴백하지 않는다.
+          DEFAULT_DEPLOY=/Users/jaeseok/TerraWorld-IT/deploy
+          if [ "${TERRAWORLD_DEPLOY_DIR+x}" = x ]; then
+            DEPLOY=$TERRAWORLD_DEPLOY_DIR
+          else
+            DEPLOY=$DEFAULT_DEPLOY
+          fi
+          case "$DEPLOY" in
+            /*) ;;
+            *) fail 'TERRAWORLD_DEPLOY_DIR는 비어 있지 않은 절대 경로여야 합니다.' ;;
+          esac
+          [ -d "$DEPLOY" ] || fail '호스트 배포 디렉터리가 없습니다.'
+          DEPLOY=$(cd "$DEPLOY" && pwd -P)
+          CANDIDATE=$(cd "$GITHUB_WORKSPACE" && pwd -P)
+          [ "$DEPLOY" != "$CANDIDATE" ] || fail '배포 디렉터리와 Actions checkout은 분리되어야 합니다.'
+          [ "$(git -C "$DEPLOY" rev-parse --is-inside-work-tree)" = true ] || fail '호스트가 git checkout이 아닙니다.'
+          TOP=$(git -C "$DEPLOY" rev-parse --show-toplevel)
+          [ "$(cd "$TOP" && pwd -P)" = "$DEPLOY" ] || fail '배포 디렉터리는 git 루트여야 합니다.'
+          [ -r "$DEPLOY/.env" ] || fail '호스트 .env를 읽을 수 없습니다.'
+          [ -f "$DEPLOY/docker-compose.yml" ] || fail '호스트 compose 파일이 없습니다.'
+          [ -f "$DEPLOY/docker-compose.tunnel.yml" ] || fail '호스트 tunnel overlay가 없습니다.'
+          [ "$(git -C "$CANDIDATE" rev-parse HEAD)" = "$GITHUB_SHA" ] || fail '후보 SHA가 다릅니다.'
+          HOST_STATUS=$(git -C "$DEPLOY" status --porcelain --untracked-files=no) || fail '호스트 git status 조회에 실패했습니다.'
+          [ -z "$HOST_STATUS" ] || fail '호스트에 추적 파일 변경이 있습니다.'
+          git -C "$DEPLOY" ls-files --error-unmatch .config-sync-applied >/dev/null 2>&1 && fail '마커는 git 추적 대상일 수 없습니다.'
+
+          MARKER="$DEPLOY/.config-sync-applied"
+          APPLIED=''
+          if [ -e "$MARKER" ] || [ -L "$MARKER" ]; then
+            [ -f "$MARKER" ] && [ ! -L "$MARKER" ] || fail '마커는 일반 파일이어야 합니다.'
+            APPLIED=$(cat "$MARKER")
+            [[ "$APPLIED" =~ ^[0-9a-f]{40}$ ]] || fail '마커 SHA 형식이 잘못되었습니다.'
+            git -C "$DEPLOY" cat-file -e "${APPLIED}^{commit}" || fail '마커 커밋이 없습니다.'
+            git -C "$DEPLOY" merge-base --is-ancestor "$APPLIED" HEAD || fail '마커가 호스트 이력에 없습니다.'
+          fi
+
+          # 로컬 checkout에서 전체 이력을 가져와 원격 인증 없이 fast-forward만 허용한다.
+          git -C "$DEPLOY" fetch --no-tags "$CANDIDATE" "$GITHUB_SHA"
+          HOST_HEAD=$(git -C "$DEPLOY" rev-parse HEAD)
+          if [ "$HOST_HEAD" != "$GITHUB_SHA" ] && git -C "$DEPLOY" merge-base --is-ancestor "$GITHUB_SHA" "$HOST_HEAD"; then
+            skip '호스트가 이미 더 최신 커밋입니다.'
+          fi
+          git -C "$DEPLOY" merge-base --is-ancestor "$HOST_HEAD" "$GITHUB_SHA" || fail '호스트와 후보 이력이 분기되었습니다.'
+          if [ "$APPLIED" = "$GITHUB_SHA" ]; then
+            skip '이미 성공한 SHA입니다.'
+          fi
+
+          # 이름 변경도 추가로 검사해 호스트의 무시된 로컬 파일 덮어쓰기를 차단한다.
+          # NUL 구분과 pipefail로 특수 파일명 및 git 조회 실패를 안전하게 처리한다.
+          git -C "$DEPLOY" diff --name-only --diff-filter=A --no-renames -z "$HOST_HEAD" "$GITHUB_SHA" |
+            while IFS= read -r -d '' added_path; do
+              if git -C "$DEPLOY" check-ignore -q -- "$added_path"; then
+                fail "후보가 호스트에서 무시된 경로를 추적합니다: $added_path"
+              else
+                ignore_status=$?
+                [ "$ignore_status" -eq 1 ] || fail "호스트 무시 경로 조회에 실패했습니다: $added_path"
+              fi
+            done || fail '후보의 새 추적 경로 검증에 실패했습니다.'
+
+          # 상대 env_file/volume 경로와 프로젝트는 운영 호스트 기준으로 고정한다.
+          # 기존 컨테이너의 프로젝트 소속을 확인해 별도 스택 생성도 차단한다.
+          PROJECT=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' tw-backend)
+          [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail '운영 Compose 프로젝트를 확인할 수 없습니다.'
+          COMPOSE=(docker compose --project-name "$PROJECT" --project-directory "$DEPLOY"
+            --env-file "$DEPLOY/.env" -f "$CANDIDATE/docker-compose.yml" -f "$CANDIDATE/docker-compose.tunnel.yml")
+          "${COMPOSE[@]}" config --quiet
+
+          # 태그 문자열 대신 로컬 이미지 ID를 비교해 latest 태그 이동도 차단한다.
+          # 모든 서비스 검사를 끝내기 전에는 운영 컨테이너를 조작하지 않는다.
+          check_images() {
+            local service container ref configured running owner label state
+            for service in backend frontend nginx-tunnel; do
+              container="tw-$service"
+              owner=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container")
+              label=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container")
+              state=$(docker inspect --format '{{.State.Running}}' "$container")
+              [ "$owner" = "$PROJECT" ] && [ "$label" = "$service" ] && [ "$state" = true ] || fail "$service 운영 컨테이너 소속/상태가 다릅니다."
+              ref=$("${COMPOSE[@]}" config --format json | python3 -c '
+          import json, sys
+          service = json.load(sys.stdin)["services"][sys.argv[1]]
+          if "build" in service:
+              sys.exit("Config sync에서는 build 설정을 허용하지 않습니다.")
+          if service.get("container_name") != "tw-" + sys.argv[1]:
+              sys.exit("후보 container_name이 운영 컨테이너와 다릅니다.")
+          print(service["image"])
+          ' "$service")
+              [ -n "$ref" ] && [[ "$ref" != *$'\n'* ]] || fail "$service 이미지가 하나로 결정되지 않습니다."
+              configured=$(docker image inspect --format '{{.Id}}' "$ref")
+              running=$(docker inspect --format '{{.Image}}' "$container")
+              [ "$configured" = "$running" ] || fail "$service 이미지 불일치: 이미지 롤아웃은 앱 CI에서 처리해야 합니다."
+            done
+          }
+          check_images
+
+          CHANGED=1
+          if [ -n "$APPLIED" ]; then
+            CHANGES=$(git -C "$DEPLOY" diff --name-only "$APPLIED" "$GITHUB_SHA" -- docker-compose.yml docker-compose.tunnel.yml nginx/templates-tunnel)
+            [ -n "$CHANGES" ] || CHANGED=0
+          fi
+
+          if [ "$CHANGED" = 1 ]; then
+            [ -d "$CANDIDATE/nginx/templates-tunnel" ] || fail '후보 tunnel 템플릿이 없습니다.'
+            # 운영 포트를 열지 않는 임시 컨테이너로 후보 템플릿을 검증한다.
+            # project-directory는 호스트이므로 이 bind mount만 후보 경로로 덮어쓴다.
+            "${COMPOSE[@]}" run --rm --no-deps --pull never \
+              --volume "$CANDIDATE/nginx/templates-tunnel:/etc/nginx/templates:ro" nginx-tunnel nginx -t
+          fi
+
+          # 검증 중 외부 작업이 HEAD를 바꿨으면 적용하지 않는다.
+          [ "$(git -C "$DEPLOY" rev-parse HEAD)" = "$HOST_HEAD" ] || fail '검증 중 호스트 HEAD가 변경되었습니다.'
+          HOST_STATUS=$(git -C "$DEPLOY" status --porcelain --untracked-files=no) || fail '검증 후 호스트 git status 조회에 실패했습니다.'
+          [ -z "$HOST_STATUS" ] || fail '검증 중 호스트 파일이 변경되었습니다.'
+          check_images
+          git -C "$DEPLOY" merge --ff-only "$GITHUB_SHA"
+          [ "$(git -C "$DEPLOY" rev-parse HEAD)" = "$GITHUB_SHA" ] || fail '적용 대상 SHA가 다릅니다.'
+          # 병합으로 바뀐 인덱스와 파일 타입을 컨테이너 적용 전에 다시 검사한다.
+          if git -C "$DEPLOY" ls-files --error-unmatch .config-sync-applied >/dev/null 2>&1; then
+            fail '병합 후 마커는 git 추적 대상일 수 없습니다.'
+          else
+            marker_status=$?
+            [ "$marker_status" -eq 1 ] || fail '병합 후 마커 추적 상태 조회에 실패했습니다.'
+          fi
+          [ ! -L "$MARKER" ] || fail '병합 후 마커는 심링크일 수 없습니다.'
+          if [ -e "$MARKER" ]; then
+            [ -f "$MARKER" ] || fail '병합 후 마커는 일반 파일이어야 합니다.'
+          fi
+          COMPOSE=(docker compose --project-name "$PROJECT" --project-directory "$DEPLOY"
+            --env-file "$DEPLOY/.env" -f "$DEPLOY/docker-compose.yml" -f "$DEPLOY/docker-compose.tunnel.yml")
+
+          if [ "$CHANGED" = 1 ]; then
+            # 이미지 pull/build 금지. 앱은 설정 변경 시에만, nginx만 강제 재생성한다.
+            "${COMPOSE[@]}" up -d --no-deps --no-build --pull never --wait --wait-timeout 300 backend frontend
+            "${COMPOSE[@]}" up -d --no-deps --no-build --pull never --force-recreate --wait --wait-timeout 90 nginx-tunnel
+          fi
+          curl --fail --silent --show-error --max-time 10 --output /dev/null http://127.0.0.1:18090/auth/login
+
+          # 적용/health 실패 시 이전 마커를 유지한다. 같은 HEAD도 다음 실행에서 재시도한다.
+          [ "$(git -C "$DEPLOY" rev-parse HEAD)" = "$GITHUB_SHA" ] || fail '적용 중 호스트 HEAD가 변경되었습니다.'
+          MARKER_TMP=$(mktemp "$DEPLOY/.config-sync-applied.XXXXXX")
+          trap 'rm -f -- "$MARKER_TMP" || true; release_deploy_lock' EXIT
+          printf '%s\n' "$GITHUB_SHA" > "$MARKER_TMP"
+          mv -f -- "$MARKER_TMP" "$MARKER"
+          printf 'Config sync 성공: `%s` (설정 변경: %s)\n' "$GITHUB_SHA" "$CHANGED" >> "$GITHUB_STEP_SUMMARY"
