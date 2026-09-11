@@ -53,6 +53,12 @@ services:
       redis:
         condition: service_healthy
     env_file: .env
+    # prod 프로필(application.yml)은 SPRING_DATASOURCE_USERNAME/PASSWORD 를 기본값 없이 요구하는데
+    # .env 에는 postgres 서비스와 공유하는 DB_USER/DB_PASSWORD 만 있다. 같은 자격증명을 backend 가
+    # 읽는 이름으로 매핑해 신규 호스트 prod 부팅 실패를 막는다(env_file 값 위에 덮어써도 동일 값).
+    environment:
+      SPRING_DATASOURCE_USERNAME: ${DB_USER}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP || exit 1"]
       interval: 20s
