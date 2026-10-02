@@ -116,7 +116,7 @@ jobs:
           export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
           cd "${{ steps.prep.outputs.deploy_dir }}"
           export BACKEND_TAG FRONTEND_TAG
-          COMPOSE="docker compose -f docker-compose.yml -f docker-compose.tunnel.yml"
+          COMPOSE="docker compose -f docker-compose.yml -f docker-compose.tunnel.yml -f docker-compose.lan-db.yml"
           $COMPOSE pull backend frontend
           $COMPOSE up -d --no-deps backend frontend
           if [ "${{ inputs.restart_nginx }}" = "true" ]; then

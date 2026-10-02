@@ -119,7 +119,7 @@ jobs:
           PROJECT=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' tw-backend)
           [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail '운영 Compose 프로젝트를 확인할 수 없습니다.'
           COMPOSE=(docker compose --project-name "$PROJECT" --project-directory "$DEPLOY"
-            --env-file "$DEPLOY/.env" -f "$CANDIDATE/docker-compose.yml" -f "$CANDIDATE/docker-compose.tunnel.yml")
+            --env-file "$DEPLOY/.env" -f "$CANDIDATE/docker-compose.yml" -f "$CANDIDATE/docker-compose.tunnel.yml" -f "$CANDIDATE/docker-compose.lan-db.yml")
           "${COMPOSE[@]}" config --quiet
 
           # 태그 문자열 대신 로컬 이미지 ID를 비교해 latest 태그 이동도 차단한다.
@@ -182,7 +182,7 @@ jobs:
             [ -f "$MARKER" ] || fail '병합 후 마커는 일반 파일이어야 합니다.'
           fi
           COMPOSE=(docker compose --project-name "$PROJECT" --project-directory "$DEPLOY"
-            --env-file "$DEPLOY/.env" -f "$DEPLOY/docker-compose.yml" -f "$DEPLOY/docker-compose.tunnel.yml")
+            --env-file "$DEPLOY/.env" -f "$DEPLOY/docker-compose.yml" -f "$DEPLOY/docker-compose.tunnel.yml" -f "$DEPLOY/docker-compose.lan-db.yml")
 
           if [ "$CHANGED" = 1 ]; then
             # 이미지 pull/build 금지. 앱은 설정 변경 시에만, nginx만 강제 재생성한다.
