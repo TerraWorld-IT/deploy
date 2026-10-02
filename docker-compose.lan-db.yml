@@ -1,0 +1,8 @@
+# LAN DB 오버레이 (HA 2노드 D0) — Mac 의 Postgres 를 같은 공유기의 윈도우 노드가 공유하도록
+# LAN IP 에만 바인딩한다. 공인 인터넷/0.0.0.0 노출 금지. Mac IP 는 공유기 DHCP 예약으로 고정 권장.
+# 사용: 모든 배포 명령에 이 파일을 항상 포함해야 한다(빠지면 포트가 닫혀 윈도우가 DB 를 잃는다).
+#   docker compose -f docker-compose.yml -f docker-compose.tunnel.yml -f docker-compose.lan-db.yml up -d ...
+services:
+  postgres:
+    ports:
+      - "192.168.219.100:5432:5432"
