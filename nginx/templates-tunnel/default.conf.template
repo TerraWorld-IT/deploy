@@ -23,6 +23,12 @@ server {
         return 200 '[{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"android_app","package_name":"app.terraworld.mobile","sha256_cert_fingerprints":["${ANDROID_SHA256_FINGERPRINT}"]}}]';
     }
 
+    # AdMob 앱 인증용 판매자 정보 — 하위 도메인 우선 탐색
+    location = /app-ads.txt {
+        default_type text/plain;
+        return 200 'google.com, pub-1298693904589724, DIRECT, f08c47fec0942fa0\n';
+    }
+
     # 보안 헤더
     add_header X-Frame-Options "DENY" always;
     add_header X-Content-Type-Options "nosniff" always;
