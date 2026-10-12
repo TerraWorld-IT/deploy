@@ -3,6 +3,7 @@
 /.env.bootstrap.*
 /.env.secrets-prev
 /.secrets-applied
+/.secrets-applying
 /.env.sops.*
 /.secrets-tools.*
 nginx/certs/
