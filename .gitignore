@@ -1,5 +1,9 @@
 .env
 /mac-host.env
 /.env.bootstrap.*
+/.env.secrets-prev
+/.secrets-applied
+/.env.sops.*
+/.secrets-tools.*
 nginx/certs/
 backups/
