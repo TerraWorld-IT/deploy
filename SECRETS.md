@@ -8,7 +8,11 @@
 
 ## 1. 공통 인프라 시크릿 (`deploy/.env`)
 
-`docker-compose up` 으로 띄우는 컨테이너들이 환경 변수로 받는다. 운영 서버에서 `.env` 파일로 관리하거나, GitHub Actions 의 `Settings → Secrets` 에 저장 후 deploy workflow 에서 주입.
+`docker-compose up` 으로 띄우는 컨테이너들이 환경 변수로 받는다. 서버 런타임 시크릿(`deploy/.env`)의 원본(SoT)은 private 저장소 `TerraWorld-IT/terraworld-secrets` 의 `server/env/production.sops.env` (SOPS + age 암호문).
+
+암호문 변경이 `main` 에 머지되면 해당 저장소의 `apply-env` 워크플로가 self-hosted Mac 러너에서 호스트 `deploy/.env` 를 생성·교체하고 `backend` / `frontend` / `nginx-tunnel` 을 재생성한다. 앱 CI (`frontend` / `backend` 의 `ci.yml`)는 호스트 `.env` 를 읽기만 한다.
+
+호스트 `.env` 를 직접 고치면 다음 적용이 드리프트로 실패하므로, 값 변경은 `terraworld-secrets` 의 암호문 수정 PR 로 진행한다. 절차 상세는 [terraworld-secrets README](https://github.com/TerraWorld-IT/terraworld-secrets/blob/main/README.md) 참고.
 
 | 이름 | 사용처 | 생성 방법 |
 |---|---|---|
@@ -47,7 +51,7 @@ PAT 권한: `repo` (read). 발급 위치: GitHub Account → Settings → Develo
 | `NUXT_PUBLIC_ADSENSE_CLIENT` | AdSense `ca-pub-...` ID | 공개 |
 | `NUXT_PUBLIC_ADSENSE_SLOT` | AdSense 슬롯 ID | 공개 |
 | `NUXT_PUBLIC_ADMOB_REWARDED_AD_ID` | AdMob 보상형 광고 단위 ID | 공개 |
-| `NUXT_PUBLIC_META_APP_ID` | Meta 앱 ID `1768257850852519` — 인스타 스토리 직공유 source_application. ci.yml deploy 단계가 호스트 `.env` 에 멱등 주입 | 공개 |
+| `NUXT_PUBLIC_META_APP_ID` | Meta 앱 ID `1768257850852519` — 인스타 스토리 직공유 source_application. `terraworld-secrets` 암호문에서 관리하고 호스트 `.env` 를 통해 전달 | 공개 |
 
 ---
 
@@ -79,7 +83,7 @@ PAT 권한: `repo` (read). 발급 위치: GitHub Account → Settings → Develo
 
 ## 5b. Universal Links / App Links (envsubst 자동화)
 
-iOS Universal Links 와 Android App Links 가 동작하려면 nginx 가 두 well-known 엔드포인트를 정확한 메타데이터로 반환해야 한다. **2026-05-08 부터 envsubst 자동화 도입** — 운영자가 `nginx/default.conf` 를 직접 편집하지 않고 `deploy/.env` 의 환경변수 두 개만 설정하면 됨. nginx-alpine entrypoint 가 `nginx/templates/default.conf.template` 을 자동 envsubst → `/etc/nginx/conf.d/default.conf` 로 출력.
+iOS Universal Links 와 Android App Links 가 동작하려면 nginx 가 두 well-known 엔드포인트를 정확한 메타데이터로 반환해야 한다. **2026-05-08 부터 envsubst 자동화 도입** — 운영자가 `nginx/default.conf` 를 직접 편집하지 않고 `terraworld-secrets` 암호문 수정 PR 로 `deploy/.env` 의 환경변수 두 개만 설정하면 됨. nginx-alpine entrypoint 가 `nginx/templates/default.conf.template` 을 자동 envsubst → `/etc/nginx/conf.d/default.conf` 로 출력.
 
 | 환경변수 (deploy/.env) | template placeholder | 의미 | 추출 방법 |
 | --- | --- | --- | --- |
@@ -111,7 +115,7 @@ Play App Signing 사용 시 (권장) Play Console 의 "App signing key certifica
 ### 적용 절차 (envsubst 자동화 후)
 
 1. 위 두 값 추출 (운영자 손)
-2. `deploy/.env` 에 두 환경변수 추가:
+2. `terraworld-secrets` 의 `server/env/production.sops.env` 암호문 수정 PR 로 `deploy/.env` 에 두 환경변수 추가 (§1 적용 경로):
 
    ```bash
    IOS_TEAM_ID=ABCD1234EF
@@ -143,6 +147,8 @@ Play App Signing 사용 시 (권장) Play Console 의 "App signing key certifica
 
 ## 6. Deploy 시크릿 (CI → 서버)
 
+아래 SSH / registry 시크릿은 backend `deploy.yml` 의 legacy 수동 경로용이며 등록돼 있지 않다. 실제 배포는 self-hosted 러너가 수행한다.
+
 | 이름 | 사용처 |
 |---|---|
 | `DEPLOY_HOST` | 운영 서버 IP/도메인 |
@@ -162,6 +168,7 @@ Play App Signing 사용 시 (권장) Play Console 의 "App signing key certifica
 4. 코드에서 사용 시 fallback / fail fast 정책 명시
 5. CI / docker-compose 의 environment 매핑 검증
 6. 양쪽 (FE+BE) 공유 시 "MUST match exactly" 주석 작성
+7. 서버 런타임 값은 `terraworld-secrets` 의 `server/env/production.sops.env` 암호문 수정 PR 로 추가하고, `apply-env` 적용으로 `deploy/.env` 갱신 (§1 / 해당 저장소 README 참고)
 
 ### 시크릿 회전 (rotation)
 
@@ -172,7 +179,7 @@ Play App Signing 사용 시 (권장) Play Console 의 "App signing key certifica
 **절차** (운영 시간 외, KST 02:00~05:00 권장):
 
 1. 새 secret 생성: `openssl rand -hex 32`
-2. FE / BE 의 `.env` 동시 갱신 (deploy/.env)
+2. `terraworld-secrets` 의 `server/env/production.sops.env` 암호문 수정 PR 로 FE / BE 공유값 갱신 (`apply-env` 가 `deploy/.env` 교체)
 3. Nitro 재시작 — better-auth 가 자동으로 새 RSA key pair 를 `auth.jwks` 에 insert
 4. **구 jwks row 5분 grace period 유지** — 회전 직전 발급된 JWT (5분 TTL) 가 만료되기 전까지는 구 키로도 검증되어야 함. 즉시 삭제하면 발급된 토큰이 무효화됨.
 5. 5분 후 `DELETE FROM auth.jwks WHERE created_at < (NOW() - INTERVAL '5 minutes')` — 또는 better-auth 자동 cleanup 정책 활용
@@ -188,7 +195,7 @@ FE (Nitro) ↔ BE (Spring internal endpoint) 사이 X-Internal-Token 검증값. 
 
 1. BE 코드에 dual-accept 모드 추가 — 환경변수 `INTERNAL_API_TOKEN` (신) + `INTERNAL_API_TOKEN_PREVIOUS` (구) 둘 다 검증 통과
 2. BE 배포 → 양 토큰 모두 검증 가능 상태
-3. FE 환경변수 갱신 (구 → 신)
+3. `terraworld-secrets` 암호문 수정 PR 로 FE 환경변수 갱신 (구 → 신, `apply-env` 를 통해 적용)
 4. FE 재배포 → 모든 호출이 신 토큰
 5. BE 의 `INTERNAL_API_TOKEN_PREVIOUS` 제거 후 재배포
 
@@ -205,7 +212,7 @@ FE (Nitro) ↔ BE (Spring internal endpoint) 사이 X-Internal-Token 검증값. 
 
 #### 그 외
 
-- `DB_PASSWORD` — 운영 시간 외 회전. 5분 미만 downtime 허용 시 단순 갱신 + 재시작. zero-downtime 은 read replica 활용.
+- `DB_PASSWORD` — 운영 시간 외 회전. 5분 미만 downtime 허용 시 `terraworld-secrets` 암호문 수정 PR 로 갱신 + 재시작. zero-downtime 은 read replica 활용.
 - `OPENAPI_SUBMODULE_TOKEN` (PAT) — 만료 전 갱신. GitHub Actions Secret 만 변경 (코드 변경 X).
 
 ### 절대 하지 말 것
