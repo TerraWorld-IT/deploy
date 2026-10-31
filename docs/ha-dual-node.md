@@ -2,6 +2,11 @@
 
 목표: **한 노드가 내려가도 같은 URL(`https://terraworld.web-qplay.kr`)로 서비스가 계속 응답**한다.
 
+> **현재 상태(2026-10-31)**: 구성 D1로 운영 중이다. DB는 Supabase(`terraworld-seoul`, ap-northeast-2)이고 두 노드가 같은 DB를 쓴다.
+> 윈도우 노드는 BIOS 가상화가 꺼져 있어 Docker 없이 네이티브로 돈다. 아래 "윈도우 노드 구축 절차(D0)"의 Docker·Mac DB 내용은 과거 기록이다.
+> 실제 스크립트와 운영 방법은 [`../windows-node/README.md`](../windows-node/README.md) 를 본다.
+> Supabase session pooler 의 연결 한도는 pool_size(기본 15)이다. 두 노드의 backend(Hikari 10)와 frontend(pg 10)를 합하면 이 한도를 넘을 수 있으니 pool size 를 함께 관리한다.
+
 요약: Cloudflare Tunnel 은 **하나의 named tunnel 에 여러 cloudflared 복제본(connector)** 을 붙이면
 자동으로 트래픽을 분산하고, 한 커넥터가 끊기면 남은 커넥터로 **자동 failover** 한다(Cloudflare 측 기능,
 추가 LB 비용 없음). 따라서 WAS(프론트/백엔드/nginx) 계층 이중화는 두 번째 머신에서 같은 스택 +
