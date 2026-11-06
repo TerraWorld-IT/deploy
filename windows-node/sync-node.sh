@@ -11,6 +11,9 @@ FE="${2:?usage: sync-node.sh <backend digest> <frontend digest>}"
 cd "$D"
 ps() { powershell -NoProfile -Command "$1; exit 0" || true; }
 H='Host: terraworld.web-qplay.kr'
+# 포트 소유 프로세스 찾기(Get-NetTCPConnection)는 S4U 세션에서 빈 결과가 나와 옛 프로세스가 남았다(2026-11-06).
+# 실행 파일 경로·명령줄로 종료하고, 포트가 실제로 비었는지 확인한 뒤 진행한다.
+port_free() { for _ in $(seq 1 20); do curl -s -o /dev/null -m 1 "http://127.0.0.1:$1/" || return 0; sleep 1; done; echo "포트 $1 이 비지 않음 — 중단"; return 1; }
 
 echo "[1/6] 이미지 다운로드"
 bin/crane.exe export "ghcr.io/terraworld-it/terraworld-backend@$BE" backend.tar
@@ -23,7 +26,8 @@ ps "Stop-ScheduledTask -TaskName TerraWorldNode -ErrorAction SilentlyContinue; G
 sleep 5
 
 echo "[3/6] backend 교체"
-ps "Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id \$_.OwningProcess -Force -ErrorAction SilentlyContinue }"
+ps "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | Where-Object { \$_.CommandLine -match 'app\.jar' -and \$_.ExecutablePath -like '*terraworld-node*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }"
+port_free 8080
 sleep 2
 [ -f app/backend.digest ] && cp app/backend.digest app/backend.digest.prev
 mv -f app/backend/app.jar app/backend/app.jar.prev 2>/dev/null || true
@@ -31,7 +35,8 @@ mv app/backend.new/app.jar app/backend/app.jar && rmdir app/backend.new
 echo "$BE" > app/backend.digest
 
 echo "[4/6] frontend 교체"
-ps "Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id \$_.OwningProcess -Force -ErrorAction SilentlyContinue }"
+ps "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { \$_.CommandLine -match 'index\.mjs' -and \$_.ExecutablePath -like '*terraworld-node*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }"
+port_free 3000
 sleep 2
 [ -f app/frontend.digest ] && cp app/frontend.digest app/frontend.digest.prev
 cmd //c "rmdir /s /q app\\frontend" 2>/dev/null || true

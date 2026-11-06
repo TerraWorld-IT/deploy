@@ -6,6 +6,8 @@ $ports = 3000, 8080
 foreach ($p in $ports) {
   Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue | % { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue; "killed port $p pid $($_.OwningProcess)" }
 }
+# 포트 조회가 빈 결과일 때를 대비해 노드 폴더의 java(app.jar)·node(index.mjs)도 명령줄로 종료
+Get-CimInstance Win32_Process -Filter "Name='java.exe' OR Name='node.exe'" | ? { $_.ExecutablePath -like '*terraworld-node*' -and $_.CommandLine -match 'app\.jar|index\.mjs' } | % { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; "killed $($_.Name) $($_.ProcessId)" }
 Get-Process nginx, cloudflared -ErrorAction SilentlyContinue | % { Stop-Process -Id $_.Id -Force; "killed $($_.Name) $($_.Id)" }
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | ? { $_.CommandLine -match 'supervisor\.ps1|run-(backend|frontend|nginx)\.ps1' -and $_.ProcessId -ne $PID } | % { Stop-Process -Id $_.ProcessId -Force; "killed supervisor/run $($_.ProcessId)" }
 # 감시자 오작동으로 쌓인 창 없는 콘솔(conhost --headless) 정리 — 사용자 터미널은 건드리지 않는다
